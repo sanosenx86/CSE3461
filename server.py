@@ -41,3 +41,12 @@ def login(username, password):
     else:
         # TODO: after logged in
         print("logged in")
+
+
+def main():
+    while True:
+        pass
+        # TODO: finish the main loop
+
+
+main()
