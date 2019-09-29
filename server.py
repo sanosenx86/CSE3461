@@ -1,30 +1,32 @@
-import select, socket, sys, Queue
+import select, socket, sys, Queue, base64
 
 dir_usr_pwd = dict()  # (username, password)
 user_login = dict()  # (socketobject, username)
 PATH = "userinfo.txt"
-HOST = 'localhost'  # Symbolic name meaning all available interfaces
-PORT = 23333  # Arbitrary non-privileged port
+HOST = input("Please input the server address: ")  # Symbolic name meaning all available interfaces
+PORT = 23333     # Arbitrary non-privileged port
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.setblocking(0)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+##server.setblocking(0)
 inputs = [server, sys.stdin]
+dead = []
 
 
 def read_user_pwd():
-    try:
-        with open(PATH, "r+") as file:
-            temp = file.read().splitlines()
-            print(temp)
-            i = 0
-            while i < len(temp):
-                usr = temp[i]
-                pwd = temp[i + 1]
-                dir_usr_pwd[usr] = pwd
-                i += 2
-    except FileNotFoundError:
-        file = open(PATH, "w+")
-    finally:
-        file.close()
+	try:
+		f = open(PATH, "r+")
+		temp = f.read().splitlines()
+		#print(temp)
+		i = 0
+		while i < len(temp):
+			usr = temp[i]
+			pwd = temp[i + 1]
+			dir_usr_pwd[usr] = pwd
+			i += 2
+		f.close()
+	except:
+		f = open(PATH, "w+")
+		f.close()
 
 
 def write_user_pwd():
@@ -49,10 +51,35 @@ def login(username, password, s):
         # Does not allow multiple account log in.
         return False
     else:
-        user_login[s] = username
+        user_login[username] = s
         return True
 
+def server_msg(msg):
+	msg = base64.b64encode(msg)
+	return 'svr '+msg #svr means server message
 
+def send_server_message(s, msg):
+	try:
+		s.send(server_msg(msg))
+	except:
+		handle_dead_socket(s)
+
+def handle_dead_socket(s):
+	inputs.remove(s)
+	if s in user_login.keys():
+		user_login.pop(s, None)
+	s.close()
+	
+def send_all(msg):
+	for s in inputs[2:]:
+		try:
+			s.send(msg)
+		except:
+			dead.append(s)
+	for s in dead:
+		handle_dead_socket(s)
+	del dead[:]
+	
 def main():
     read_user_pwd()
     try:
@@ -61,64 +88,62 @@ def main():
         while inputs:
             readable, writable, exceptional = select.select(inputs, inputs, inputs)
             for s in readable:
-                if s is server:
-                    # handle new connect.
-                    print
-                    "received a connect request from a client "
+                if s is server: # handle new connect.
+                    print "received a connect request from a client "
                     connection, client_address = s.accept()
-                    print
-                    "connection is {}".format(connection)
-                    connection.setblocking(0)
-                    connection.send("Please log in or register")
+                    print "connection is {}".format(connection)
+                    # connection.setblocking(0)
+                    send_server_message(connection, "Please log in or register")
                     inputs.append(connection)
-                elif s is sys.stdin:
-                    # handle server command.
+                elif s is sys.stdin: # handle server command.
                     command_input = raw_input()
-                    if command_input.strip() == "quit":
-                        print
-                        "Server quit"
-                        for client_socket in inputs[2:]:
-                            client_socket.send("disc")  # Client will handle it.
-                        sys.exit()
-                    else:
-                        server.sendall("Server boardcast:" + command_input)
+                    if command_input.strip() == "quit": # server quit
+                        print "Server quit"
+			sys.exit()
+                    else: # boardcast case
+			send_all(server_msg(command_input))
+			print "Broadcast sent"
                 else:
                     # handle connected.
                     data = s.recv(65535)
                     if data:
                         words = data.split()
-                        for i, word in enumerate(words):
-                            if s in user_login.keys():  # logged in
-                                if word == "msg" and len(
-                                        words) == 4:  # make sure "msg target message sender" format exists.
-                                    target = words[i + 1]
-                                    if target in user_login.keys():
-                                        send_socket = user_login[target]
-                                        send_socket.send(data)  # client will take care the data.
-                                    else:
-                                        s.send("target not online")
-                                elif word == "online":  # return online users.
-                                    s.send(user_login.values())
-                                elif word == "quit":  # remove s in all lists.
-                                    user_login.pop(s, None)
-                                    inputs.remove(s)
+                    	word = words[0]
+                        if s in user_login.values():  # logged in
+			    #print data
+                            if word == "msg" and len(words) == 4:  # make sure "msg <target> <message> <sender>" format exists.
+                                target = words[1]
+                                if target in user_login.keys():
+                                    send_socket = user_login[target]
+                                    send_socket.send(data)  # client will take care the data.
                                 else:
-                                    s.send("server cannot understand what you've send.")
-                            else:  # not logged in
-                                if word == "login" and len(words) > 2 :
-                                    if login(words[1], words[2], s):
-                                        s.send("log" + words[1])
-                                        s.send("logged in as" + words[1])
-                                    else:
-                                        s.send("login failed: invalid credential or username already logged in")
-                                elif word == "register" and len(words) > 2:
-                                    if register(words[1], words[2]):
-                                        s.send("successfully registered user" + words[1])
-                                    else:
-                                        s.send("register failed. Conflict username")
+                                    send_server_message(s, "target is not online")
+                            elif word == "online":  # return online users.
+                                send_server_message(s, str(user_login.keys()))
+                            elif word == "quit":  # remove s in all lists.
+                                user_login.pop(s, None)
+                                inputs.remove(s)
+                            else:
+                                send_server_message(s, "server cannot understand what you've sent.")
+                        else:  # not logged in
+                            if word == "login" and len(words) > 2 :
+                                if login(words[1], words[2], s):
+                                    s.send("log " + words[1]) #keyword "log <username>"
+                                    send_server_message(s, "logged in as " + words[1])
                                 else:
-                                    s.send("Please log in or register.")
+                                    send_server_message(s, "login failed: invalid credential or username already logged in")
+                            elif word == "register" and len(words) > 2:
+                                if register(words[1], words[2]):
+                                    send_server_message(s, "successfully registered user " + words[1])
+                                else:
+                                    send_server_message(s, "register failed. Conflict username")
+                            else:
+                                send_server_message(s, "Please log in or register.")
+                                    
+		    for s in exceptional:
+				handle_dead_socket(s)
     finally:
-        server.close()
-
+	send_all("disc") # Client handle the disconnect signal
+    	server.close()
+    	
 main()
